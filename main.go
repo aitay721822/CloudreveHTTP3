@@ -19,6 +19,8 @@ import (
 	"github.com/cloudreve/Cloudreve/v3/pkg/conf"
 	"github.com/cloudreve/Cloudreve/v3/pkg/util"
 	"github.com/cloudreve/Cloudreve/v3/routers"
+
+	"github.com/quic-go/quic-go/http3"
 )
 
 var (
@@ -64,12 +66,16 @@ func main() {
 
 	api := routers.InitRouter()
 	api.TrustedPlatform = conf.SystemConfig.ProxyHeader
-	server := &http.Server{Handler: api}
+	quicServer := &http3.Server{Handler: api}
+	httpServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		quicServer.SetQuicHeaders(w.Header())
+		api.ServeHTTP(w, r)
+	})}
 
 	// 收到信号后关闭服务器
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-	go shutdown(sigChan, server)
+	go shutdown(sigChan, httpServer, quicServer)
 
 	defer func() {
 		<-sigChan
@@ -78,10 +84,25 @@ func main() {
 	// 如果启用了SSL
 	if conf.SSLConfig.CertPath != "" {
 		util.Log().Info("Listening to %q", conf.SSLConfig.Listen)
-		server.Addr = conf.SSLConfig.Listen
-		if err := server.ListenAndServeTLS(conf.SSLConfig.CertPath, conf.SSLConfig.KeyPath); err != nil {
+		httpServer.Addr = conf.SSLConfig.Listen
+		quicServer.Addr = conf.SSLConfig.Listen
+
+		tcpErr := make(chan error)
+		quicErr := make(chan error)
+		go func() {
+			tcpErr <- httpServer.ListenAndServeTLS(conf.SSLConfig.CertPath, conf.SSLConfig.KeyPath)
+		}()
+		go func() {
+			quicErr <- quicServer.ListenAndServeTLS(conf.SSLConfig.CertPath, conf.SSLConfig.KeyPath)
+		}()
+		select {
+		case err := <-tcpErr:
 			util.Log().Error("Failed to listen to %q: %s", conf.SSLConfig.Listen, err)
-			return
+			quicServer.Close()
+			return 
+		case err := <-quicErr:
+			util.Log().Error("Failed to listen to %q: %s", conf.SSLConfig.Listen, err)
+			return 
 		}
 	}
 
@@ -96,15 +117,15 @@ func main() {
 		}
 
 		util.Log().Info("Listening to %q", conf.UnixConfig.Listen)
-		if err := RunUnix(server); err != nil {
+		if err := RunUnix(httpServer); err != nil {
 			util.Log().Error("Failed to listen to %q: %s", conf.UnixConfig.Listen, err)
 		}
 		return
 	}
 
 	util.Log().Info("Listening to %q", conf.SystemConfig.Listen)
-	server.Addr = conf.SystemConfig.Listen
-	if err := server.ListenAndServe(); err != nil {
+	httpServer.Addr = conf.SystemConfig.Listen
+	if err := httpServer.ListenAndServe(); err != nil {
 		util.Log().Error("Failed to listen to %q: %s", conf.SystemConfig.Listen, err)
 	}
 }
@@ -133,7 +154,7 @@ func RunUnix(server *http.Server) error {
 	return server.Serve(listener)
 }
 
-func shutdown(sigChan chan os.Signal, server *http.Server) {
+func shutdown(sigChan chan os.Signal, server *http.Server, quicServer *http3.Server) {
 	sig := <-sigChan
 	util.Log().Info("Signal %s received, shutting down server...", sig)
 	ctx := context.Background()
@@ -143,9 +164,13 @@ func shutdown(sigChan chan os.Signal, server *http.Server) {
 		defer cancel()
 	}
 
+	// Shutdown quic server
+	if err := quicServer.Close(); err != nil {
+		util.Log().Error("Failed to shutdown quic server: %s", err)
+	}
+
 	// Shutdown http server
-	err := server.Shutdown(ctx)
-	if err != nil {
+	if err := server.Shutdown(ctx); err != nil {
 		util.Log().Error("Failed to shutdown server: %s", err)
 	}
 
