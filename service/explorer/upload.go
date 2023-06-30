@@ -3,6 +3,11 @@ package explorer
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
+	"strconv"
+	"strings"
+	"time"
+
 	model "github.com/cloudreve/Cloudreve/v3/models"
 	"github.com/cloudreve/Cloudreve/v3/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v3/pkg/cache"
@@ -13,10 +18,6 @@ import (
 	"github.com/cloudreve/Cloudreve/v3/pkg/serializer"
 	"github.com/cloudreve/Cloudreve/v3/pkg/util"
 	"github.com/gin-gonic/gin"
-	"io/ioutil"
-	"strconv"
-	"strings"
-	"time"
 )
 
 // CreateUploadSessionService 获取上传凭证服务
@@ -162,7 +163,11 @@ func processChunkUpload(ctx context.Context, c *gin.Context, fs *filesystem.File
 	}
 
 	fileSize, err := strconv.ParseUint(c.Request.Header.Get("Content-Length"), 10, 64)
-	if err != nil || (expectedLength != fileSize) {
+	if fileSize == 0 && c.Request.ContentLength > 0 {
+		// try to get content length from c.Request.ContentLength
+		fileSize = uint64(c.Request.ContentLength)
+	}
+	if expectedLength != fileSize {
 		return serializer.Err(
 			serializer.CodeInvalidContentLength,
 			fmt.Sprintf("Invalid Content-Length (expected: %d)", expectedLength),
