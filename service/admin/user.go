@@ -115,6 +115,9 @@ func (service *AddUserService) Add() serializer.Response {
 		if user.ID == 1 && user.GroupID != 1 {
 			return serializer.Err(serializer.CodeChangeGroupForDefaultUser, "", nil)
 		}
+		if user.ID == 1 && user.Status == model.Baned {
+			return serializer.Err(serializer.CodeInvalidActionOnDefaultUser, "", nil)
+		}
 
 		if err := model.DB.Save(&user).Error; err != nil {
 			return serializer.DBErr("Failed to save user record", err)
