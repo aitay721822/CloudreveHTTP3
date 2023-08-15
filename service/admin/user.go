@@ -112,8 +112,13 @@ func (service *AddUserService) Add() serializer.Response {
 		user.TwoFactor = service.User.TwoFactor
 
 		// 检查愚蠢操作
-		if user.ID == 1 && user.GroupID != 1 {
-			return serializer.Err(serializer.CodeChangeGroupForDefaultUser, "", nil)
+		if user.ID == 1 {
+			if user.GroupID != 1 {
+				return serializer.Err(serializer.CodeChangeGroupForDefaultUser, "", nil)
+			}
+			if user.Status != model.Active {
+				return serializer.Err(serializer.CodeInvalidActionOnDefaultUser, "", nil)
+			}
 		}
 		if user.ID == 1 && (user.Status == model.Baned || user.Status == model.OveruseBaned) {
 			return serializer.Err(serializer.CodeInvalidActionOnDefaultUser, "", nil)
